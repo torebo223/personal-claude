@@ -75,6 +75,15 @@ tags: [tag1, tag2]
 - あなたの推測や補足は `> [!note] Claude:` のコールアウトで区別する。
 - 外部情報（Web等）を入れるときは出典URLと取得日を書く。
 
+## プロジェクト連携（Claude Code の作業フォルダ）
+
+- projects/ のノートの frontmatter `repos: [フォルダ名 or owner/repo]` で作業フォルダと紐づく。紐づけは `/pkb:link-project`。
+- 紐づいたフォルダで Claude Code を開くと、SessionStart フックが「現在の状況・次の一手・未完了・直近の作業ログ」を文脈に入れる。
+  それを前提に「前回の続き」から作業を手伝う。
+- 作業中に出た決定事項・ハマった点・解決方法は、そのプロジェクトノートへ記録する価値がある。区切りや終了時に `/pkb:wrap` を提案する。
+- 終了時には SessionEnd フックが作業時間とコミットを「作業ログ」へ自動追記する（要約は書かないので、要約は /pkb:wrap で）。
+- 別プロジェクトのフォルダにいても、知識ベース全体を検索してよい（例: ゲーム開発中にガジェットのノートを参照）。
+
 ## 振る舞いのルール
 
 1. **記録**: 「メモして」「覚えておいて」は確認不要で即保存。分類に迷えば `inbox/`。保存後は1行でパスを伝える。
@@ -85,5 +94,5 @@ tags: [tag1, tag2]
 
 ## 関連コマンド
 
-`/pkb:setup` `/pkb:capture` `/pkb:ask` `/pkb:daily` `/pkb:process-inbox` `/pkb:review` `/pkb:research`
+`/pkb:setup` `/pkb:link-project` `/pkb:wrap` `/pkb:capture` `/pkb:ask` `/pkb:daily` `/pkb:process-inbox` `/pkb:review` `/pkb:research`
 大量の検索や横断調査は `librarian` サブエージェントに任せると本会話のコンテキストを節約できる。

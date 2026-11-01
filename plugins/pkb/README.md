@@ -23,6 +23,8 @@ claude plugin install pkb@personal-claude
 | MCP | basic-memory | 全文/意味検索・知識グラフ（Observations / Relations）・ノートの読み書き・リンクを保った移動 |
 | スキル | knowledge-base | 保管庫の構成・Basic Memory 形式のノート規約・振る舞いルール。「メモして」「前に何て書いた？」で自動発動 |
 | コマンド | `/pkb:setup` | 保管庫作成と Basic Memory への登録 |
+| | `/pkb:link-project [名前]` | 今の作業フォルダをプロジェクトノートに紐づけ |
+| | `/pkb:wrap` | 作業セッションのまとめ（状況・決定・ハマった点・次の一手）をノートに記録 |
 | | `/pkb:capture <内容>` | 即記録（重複確認・リンク・デイリーへの痕跡） |
 | | `/pkb:ask <質問>` | 知識ベースだけを根拠に出典付きで回答 |
 | | `/pkb:daily [内容]` | デイリー追記 / 1日の振り返り |
@@ -30,5 +32,15 @@ claude plugin install pkb@personal-claude
 | | `/pkb:review [日数]` | 週次レビュー＋孤立ノート・タグ揺れ点検 |
 | | `/pkb:research <トピック>` | 既存ノート＋Web調査で参照ノート作成 |
 | エージェント | librarian | 読み取り専用の横断検索（haiku、コンテキスト節約） |
-| フック | SessionStart | 起動時に保管庫の状況（件数・inbox・最近の更新）を注入 |
+| フック | SessionStart | 保管庫の状況に加え、紐づいたプロジェクトの「現在の状況・次の一手・未完了・直近ログ」を注入 |
+| | SessionEnd | 紐づいたプロジェクトの作業ログに時間・ブランチ・コミットを自動追記（5分未満でコミット0なら記録しない） |
 | スクリプト | scripts/pkb.py | デイリー追記・保管庫初期化・状況表示。MCP が使えないときの検索の代替 |
+
+## プロジェクト連携
+
+1. アプリ・ゲームなどの作業フォルダで Claude Code を開き、`/pkb:link-project やることアプリ`
+   → `projects/やることアプリ.md` が作られ、frontmatter の `repos:` にフォルダ名が入る（`owner/repo` やフルパスでも可。1ノートに複数フォルダ可）。
+2. 次からそのフォルダで開くと、前回の続きを Claude が最初から知っている状態で始まる。
+3. 区切りで `/pkb:wrap` → 要約・決定事項・ハマった点をノートに保存。終了時のコミット記録は自動。
+
+紐づけ一覧は `python3 scripts/pkb.py projects`。

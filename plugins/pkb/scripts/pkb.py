@@ -14,11 +14,19 @@
   backlinks <note-title>    [[note-title]] へリンクしているノート
   orphans                   どこからもリンクされていないノート
   recent [--days N]         最近更新されたノート
+
+プロジェクト連携（Claude Code の作業フォルダ ⇔ projects/ のノート）:
+  link-project <title> [--repo PATH]   作業フォルダをプロジェクトノートに紐づけ（無ければ作成）
+  project-for [--cwd PATH]             作業フォルダに紐づくプロジェクトノートのパス
+  projects                             紐づけ一覧
+  session-start / session-end          Claude Code フック用（stdin に JSON）
 """
 import argparse
 import datetime as dt
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -226,6 +234,208 @@ def cmd_recent(a):
         print(f"{ts}  {p.relative_to(v)}")
 
 
+# ---------------------------------------------------------------- プロジェクト連携
+
+PROJECT_TEMPLATE = """## 概要
+（このプロジェクトは何か・ゴール）
+
+## 現在の状況
+（未記入）
+
+## 次の一手
+- （未記入）
+
+## 決定事項
+
+## Observations
+
+## Relations
+
+## 作業ログ
+"""
+LOG_HEADING = "## 作業ログ"
+
+
+def git(cwd, *args):
+    try:
+        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=5)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def repo_keys(cwd: Path):
+    """作業フォルダを識別するキーの集合（フルパス・フォルダ名・リモートの owner/repo と repo）"""
+    cwd = Path(cwd).expanduser().resolve()
+    top = Path(git(cwd, "rev-parse", "--show-toplevel") or cwd)
+    keys = {str(top), top.name}
+    remote = git(top, "remote", "get-url", "origin")
+    m = re.search(r"[:/]([^/:]+)/([^/]+?)(?:\.git)?$", remote)
+    if m:
+        keys |= {f"{m.group(1)}/{m.group(2)}", m.group(2)}
+    return top, {k.lower() for k in keys}
+
+
+def parse_list(val: str):
+    return [x.strip().strip("'\"") for x in val.strip().strip("[]").split(",") if x.strip()]
+
+
+def find_project(cwd):
+    v = vault()
+    top, keys = repo_keys(cwd)
+    for p in sorted((v / "projects").glob("*.md")):
+        repos = parse_list(parse(p)[0].get("repos", ""))
+        if any(r.lower() in keys or str(Path(r).expanduser()).lower() in keys for r in repos):
+            return p, top
+    return None, top
+
+
+def set_frontmatter(p: Path, key: str, value: str):
+    text = p.read_text(encoding="utf-8")
+    if text.startswith("---\n") and (end := text.find("\n---", 4)) != -1:
+        fm, rest = text[4:end], text[end:]
+        if re.search(rf"^{key}:", fm, re.M):
+            fm = re.sub(rf"^{key}:.*$", f"{key}: {value}", fm, flags=re.M)
+        else:
+            fm += f"\n{key}: {value}"
+        p.write_text(f"---\n{fm}{rest}", encoding="utf-8")
+
+
+def cmd_link_project(a):
+    v = vault()
+    top, _ = repo_keys(a.repo or os.getcwd())
+    d = v / "projects"
+    d.mkdir(parents=True, exist_ok=True)
+    p = next((q for q in d.glob("*.md") if parse(q)[0].get("title", q.stem) == a.title or q.stem == slugify(a.title)), None)
+    if p is None:
+        p = d / f"{slugify(a.title)}.md"
+        write_note(p, a.title, "project", ["project"], PROJECT_TEMPLATE)
+        set_frontmatter(p, "status", "active")
+    repos = parse_list(parse(p)[0].get("repos", ""))
+    if top.name not in repos:
+        repos.append(top.name)
+    set_frontmatter(p, "repos", "[" + ", ".join(repos) + "]")
+    print(f"{p}  <=  {top}  (repos: {', '.join(repos)})")
+
+
+def cmd_project_for(a):
+    p, _ = find_project(a.cwd or os.getcwd())
+    if p:
+        print(p)
+    else:
+        sys.exit(1)
+
+
+def cmd_projects(a):
+    v = vault()
+    for p in sorted((v / "projects").glob("*.md")):
+        meta = parse(p)[0]
+        print(f"{meta.get('title', p.stem)}  [{meta.get('status', '-')}]  repos: {meta.get('repos', '-')}  ({p.relative_to(v)})")
+
+
+def sections(body: str):
+    out, cur = {}, None
+    for line in body.splitlines():
+        if line.startswith("## "):
+            cur = line[3:].strip()
+            out[cur] = []
+        elif cur:
+            out[cur].append(line)
+    return {k: "\n".join(v).strip() for k, v in out.items()}
+
+
+def state_file(session_id: str) -> Path:
+    d = Path(os.environ.get("XDG_CACHE_HOME", "~/.cache")).expanduser() / "pkb" / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"{re.sub(r'[^A-Za-z0-9_-]', '_', session_id or 'unknown')}.json"
+
+
+def hook_input():
+    try:
+        return json.loads(sys.stdin.read() or "{}")
+    except Exception:
+        return {}
+
+
+def cmd_session_start(a):
+    """SessionStart フック: 保管庫の状況と、紐づくプロジェクトの「前回の続き」を Claude の文脈に出力する"""
+    data = hook_input()
+    v = vault()
+    if not v.exists():
+        print(f"[pkb] 知識ベース未作成（{v}）。/pkb:setup で初期設定できます。")
+        return
+    cwd = data.get("cwd") or os.getcwd()
+    p, top = find_project(cwd)
+    notes = all_notes(v)
+    inbox = sum(1 for n in notes if n.relative_to(v).parts[0] == "inbox")
+    print(f"[pkb] 知識ベース: {v}（ノート {len(notes)} 件 / inbox 未整理 {inbox} 件）")
+    if not p:
+        return
+    meta, body, _ = parse(p)
+    title = meta.get("title", p.stem)
+    sec = sections(body)
+    open_items = [l.strip() for l in body.splitlines() if re.match(r"\s*- \[(todo|question)\]", l)]
+    log = [l for l in sec.get("作業ログ", "").splitlines() if l.strip()][-3:]
+    parts = [
+        f"[pkb] この作業フォルダ（{top.name}）はプロジェクト「{title}」に紐づいています: {p}",
+        "このセッションでは、作業内容・決定事項・ハマった点をこのプロジェクトノートに記録する前提で動いてください（Basic Memory の project は \"pkb\"）。",
+        "作業の区切りや終了時には /pkb:wrap でのまとめをユーザーに提案してください。",
+    ]
+    for name in ("現在の状況", "次の一手"):
+        if sec.get(name) and "未記入" not in sec[name]:
+            parts.append(f"■ {name}\n{sec[name][:800]}")
+    if open_items:
+        parts.append("■ 未完了・未解決\n" + "\n".join(open_items[:10]))
+    if log:
+        parts.append("■ 直近の作業ログ\n" + "\n".join(log))
+    print("\n\n".join(parts)[:3500])
+    state_file(data.get("session_id", "")).write_text(
+        json.dumps({"start": dt.datetime.now().isoformat(), "project": str(p), "repo": str(top)}), encoding="utf-8")
+
+
+def cmd_session_end(a):
+    """SessionEnd フック: 紐づくプロジェクトのノートに、時間・ブランチ・コミットを機械的に記録する"""
+    data = hook_input()
+    sf = state_file(data.get("session_id", ""))
+    if not sf.exists():
+        return
+    st = json.loads(sf.read_text(encoding="utf-8"))
+    sf.unlink()
+    p, repo = Path(st["project"]), Path(st["repo"])
+    if not p.exists():
+        return
+    start = dt.datetime.fromisoformat(st["start"])
+    end = dt.datetime.now()
+    commits = [c for c in git(repo, "log", f"--since={start.isoformat()}", "--pretty=format:%h %s").splitlines() if c]
+    if not commits and (end - start).total_seconds() < 300:
+        return  # 短く何も起きなかったセッションは記録しない
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD") or "-"
+    entry = f"- {start:%Y-%m-%d %H:%M}–{end:%H:%M} Claude Code セッション（{repo.name} / {branch}）"
+    entry += f" コミット {len(commits)} 件" + "".join(f"\n  - {c}" for c in commits[:10])
+    text = p.read_text(encoding="utf-8")
+    if LOG_HEADING not in text:
+        text = text.rstrip() + f"\n\n{LOG_HEADING}\n"
+    p.write_text(text.rstrip() + "\n" + entry + "\n", encoding="utf-8")
+    set_frontmatter(p, "updated", end.strftime("%Y-%m-%d %H:%M"))
+    title = parse(p)[0].get("title", p.stem)
+    a.append = f"[[{title}]] で作業（コミット {len(commits)} 件）"
+    with open(os.devnull, "w") as null:
+        old, sys.stdout = sys.stdout, null
+        try:
+            cmd_daily(a)
+        finally:
+            sys.stdout = old
+
+
+def safe(f):
+    def run(a):
+        try:
+            f(a)
+        except Exception as e:  # フックは Claude Code の動作を妨げない
+            print(f"[pkb] hook error: {e}", file=sys.stderr)
+    return run
+
+
 def main():
     ap = argparse.ArgumentParser(description="Personal knowledge base helper")
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -254,6 +464,16 @@ def main():
     r = sp.add_parser("recent")
     r.add_argument("--days", type=int, default=7)
     r.set_defaults(f=cmd_recent)
+    lp = sp.add_parser("link-project")
+    lp.add_argument("title")
+    lp.add_argument("--repo")
+    lp.set_defaults(f=cmd_link_project)
+    pf = sp.add_parser("project-for")
+    pf.add_argument("--cwd")
+    pf.set_defaults(f=cmd_project_for)
+    sp.add_parser("projects").set_defaults(f=cmd_projects)
+    sp.add_parser("session-start").set_defaults(f=safe(cmd_session_start))
+    sp.add_parser("session-end").set_defaults(f=safe(cmd_session_end))
     a = ap.parse_args()
     a.f(a)
 

@@ -1,6 +1,6 @@
 {
   "name": "pkb",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "パーソナルナレッジベース × パーソナルエージェント。ローカルMarkdownの知識ベースへの記録・検索・質問応答・振り返りをClaude Codeで行う。検索・知識グラフは Basic Memory (MCP)。",
   "author": { "name": "akamanbou" },
   "keywords": ["knowledge-base", "pkm", "notes", "zettelkasten", "obsidian"]
