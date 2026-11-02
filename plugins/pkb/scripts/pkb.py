@@ -40,7 +40,7 @@ TYPES = {
     "daily": "daily",
 }
 LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]")
-TAG_RE = re.compile(r"(?<![\w/#])#([\w\-/]+)", re.UNICODE)
+TAG_RE = re.compile(r"(?<![\w/#])#([^\W\d][\w\-/]*)", re.UNICODE)
 
 
 VAULT_NAMES = ("pkb-vault", "pkb")
@@ -64,16 +64,37 @@ def all_notes(v: Path):
     return sorted(p for p in v.rglob("*.md") if not any(part.startswith(".") for part in p.relative_to(v).parts))
 
 
+def parse_frontmatter(fm: str) -> dict:
+    """簡易 YAML: `key: value` と、Basic Memory が書く複数行リスト（`key:` の次行から `- item`）の両方を読む。
+    リストは `[a, b]` の1行形式の文字列にそろえて返す。"""
+    meta, key, items = {}, None, None
+    for line in fm.splitlines():
+        m = re.match(r"^\s*-\s+(.*)$", line)
+        if m and key is not None and items is not None:
+            items.append(m.group(1).strip().strip("'\""))
+            continue
+        if key is not None and items is not None:
+            meta[key] = "[" + ", ".join(items) + "]" if items else ""
+        key = items = None
+        if ":" in line and not line.startswith((" ", "\t")):
+            k, val = line.split(":", 1)
+            k, val = k.strip(), val.strip()
+            if val == "":
+                key, items = k, []
+            else:
+                meta[k] = val
+    if key is not None and items is not None:
+        meta[key] = "[" + ", ".join(items) + "]" if items else ""
+    return meta
+
+
 def parse(p: Path):
     text = p.read_text(encoding="utf-8", errors="replace")
     meta, body = {}, text
     if text.startswith("---\n"):
         end = text.find("\n---", 4)
         if end != -1:
-            for line in text[4:end].splitlines():
-                if ":" in line:
-                    k, val = line.split(":", 1)
-                    meta[k.strip()] = val.strip()
+            meta = parse_frontmatter(text[4:end])
             body = text[end + 4:]
     tags = set()
     raw = meta.get("tags", "").strip("[]")
@@ -307,7 +328,8 @@ def set_frontmatter(p: Path, key: str, value: str):
     if text.startswith("---\n") and (end := text.find("\n---", 4)) != -1:
         fm, rest = text[4:end], text[end:]
         if re.search(rf"^{key}:", fm, re.M):
-            fm = re.sub(rf"^{key}:.*$", f"{key}: {value}", fm, flags=re.M)
+            # 複数行リスト（次行以降の `- item`）ごと1行に置き換える
+            fm = re.sub(rf"^{key}:.*(?:\n[ \t]*-[ \t].*)*", lambda _: f"{key}: {value}", fm, flags=re.M)
         else:
             fm += f"\n{key}: {value}"
         p.write_text(f"---\n{fm}{rest}", encoding="utf-8")
