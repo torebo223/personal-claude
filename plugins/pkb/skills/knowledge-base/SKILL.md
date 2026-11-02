@@ -10,7 +10,7 @@ description: ユーザーのパーソナルナレッジベース（ローカルM
 
 ## 保管庫とエンジン
 
-- 場所: `$PKB_DIR`（未設定なら `~/pkb`）。`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/pkb.py" path` で確認。
+- 場所: `$PKB_DIR` → `~/pkb` → 作業フォルダの隣などにある `pkb-vault`（クラウド）の順に探す。`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/pkb.py" path` で確認。
 - 索引・検索・知識グラフは **Basic Memory**（このプラグインの MCP サーバー `basic-memory`）が担う。
   保管庫は Basic Memory の **プロジェクト `pkb`** として登録されている。**bm_* ツールには常に `project: "pkb"` を渡す。**
 - 保管庫や `pkb` プロジェクトが無い、または bm_* ツールが見えない場合は `/pkb:setup` を案内する。
@@ -75,6 +75,14 @@ tags: [tag1, tag2]
 - あなたの推測や補足は `> [!note] Claude:` のコールアウトで区別する。
 - 外部情報（Web等）を入れるときは出典URLと取得日を書く。
 
+## クラウド（claude.ai/code）での使い方
+
+- 保管庫は GitHub の非公開リポジトリ `pkb-vault` で、セッションに追加されていれば /home/user/pkb-vault などに自動で見つかる。
+- 開始時に自動で pull される。**ノートを書いたら区切りごとに `pkb.py sync`（または `/pkb:sync`）で commit・push する。**
+  クラウドではセッション終了時のフックが動かないまま環境が消えることがあるため、書いたまま放置しない。
+- Basic Memory は毎回まっさらなので、開始時にバックグラウンドで登録・索引される。bm_* が失敗する間は `pkb.py search` / Grep を使う。
+- 保管庫の内容を公開リポジトリ（personal-claude など）にコミットしない。
+
 ## プロジェクト連携（Claude Code の作業フォルダ）
 
 - projects/ のノートの frontmatter `repos: [フォルダ名 or owner/repo]` で作業フォルダと紐づく。紐づけは `/pkb:link-project`。
@@ -94,5 +102,5 @@ tags: [tag1, tag2]
 
 ## 関連コマンド
 
-`/pkb:setup` `/pkb:link-project` `/pkb:wrap` `/pkb:capture` `/pkb:ask` `/pkb:daily` `/pkb:process-inbox` `/pkb:review` `/pkb:research`
+`/pkb:setup` `/pkb:sync` `/pkb:link-project` `/pkb:wrap` `/pkb:capture` `/pkb:ask` `/pkb:daily` `/pkb:process-inbox` `/pkb:review` `/pkb:research`
 大量の検索や横断調査は `librarian` サブエージェントに任せると本会話のコンテキストを節約できる。

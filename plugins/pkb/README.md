@@ -44,3 +44,22 @@ claude plugin install pkb@personal-claude
 3. 区切りで `/pkb:wrap` → 要約・決定事項・ハマった点をノートに保存。終了時のコミット記録は自動。
 
 紐づけ一覧は `python3 scripts/pkb.py projects`。
+
+## クラウド（claude.ai/code）で使う
+
+クラウドは毎回まっさらな環境なので、**保管庫を GitHub の非公開リポジトリにして毎回読み込む**。
+
+1. GitHub に非公開リポジトリ `pkb-vault` を作る（空でよい）。
+2. 使いたい各リポジトリ（アプリ・ゲームなど）に `.claude/settings.json` を置き、プラグインを自動で有効にする:
+   ```json
+   {
+     "extraKnownMarketplaces": {
+       "personal-claude": { "source": { "source": "github", "repo": "torebo223/personal-claude" } }
+     },
+     "enabledPlugins": { "pkb@personal-claude": true }
+   }
+   ```
+3. セッションを始めるときに、**作業するリポジトリと `pkb-vault` の両方を選ぶ**。
+4. 開始時に自動で pull・Basic Memory 登録。ノートを書いたら `/pkb:sync`（Claude にも区切りで同期するよう指示済み）。
+
+保管庫の探し方: `$PKB_DIR` → `~/pkb` → 作業フォルダの隣・ホーム・/home/user にある `pkb-vault` / `pkb`。

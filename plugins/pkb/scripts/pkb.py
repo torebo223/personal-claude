@@ -20,6 +20,7 @@
   project-for [--cwd PATH]             作業フォルダに紐づくプロジェクトノートのパス
   projects                             紐づけ一覧
   session-start / session-end          Claude Code フック用（stdin に JSON）
+  sync                                 保管庫が Git リポジトリなら commit・pull・push（クラウド用）
 """
 import argparse
 import datetime as dt
@@ -42,8 +43,23 @@ LINK_RE = re.compile(r"\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]")
 TAG_RE = re.compile(r"(?<![\w/#])#([\w\-/]+)", re.UNICODE)
 
 
+VAULT_NAMES = ("pkb-vault", "pkb")
+
+
 def vault() -> Path:
-    return Path(os.environ.get("PKB_DIR", "~/pkb")).expanduser()
+    """保管庫の場所: $PKB_DIR → ~/pkb → 作業フォルダの隣・ホーム・/home/user にある pkb-vault / pkb（クラウド用）"""
+    if os.environ.get("PKB_DIR"):
+        return Path(os.environ["PKB_DIR"]).expanduser()
+    home = Path("~/pkb").expanduser()
+    if home.exists():
+        return home
+    bases = [Path.cwd().parent, Path.cwd(), Path.home(), Path("/home/user")]
+    for base in bases:
+        for name in VAULT_NAMES:
+            c = base / name
+            if (c / "index.md").exists() or (c / ".git").exists():
+                return c
+    return home
 
 
 def all_notes(v: Path):
@@ -256,9 +272,9 @@ PROJECT_TEMPLATE = """## 概要
 LOG_HEADING = "## 作業ログ"
 
 
-def git(cwd, *args):
+def git(cwd, *args, timeout=5):
     try:
-        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True, timeout=timeout)
         return r.stdout.strip() if r.returncode == 0 else ""
     except Exception:
         return ""
@@ -357,6 +373,51 @@ def hook_input():
         return {}
 
 
+def is_git_vault(v: Path) -> bool:
+    return (v / ".git").exists()
+
+
+def sync_vault(v: Path, pull_only=False) -> str:
+    """保管庫が Git リポジトリなら commit → pull --rebase → push する。結果を1行で返す"""
+    if not is_git_vault(v):
+        return "保管庫は Git 管理されていません（同期不要）"
+    msg = []
+    if not pull_only and git(v, "status", "--porcelain"):
+        git(v, "add", "-A")
+        git(v, "commit", "-q", "-m", f"pkb: sync {dt.datetime.now():%Y-%m-%d %H:%M}")
+        msg.append("commit")
+    if git(v, "remote"):
+        r = subprocess.run(["git", "-C", str(v), "pull", "-q", "--rebase", "--autostash"],
+                           capture_output=True, text=True, timeout=60)
+        msg.append("pull" if r.returncode == 0 else f"pull失敗: {r.stderr.strip()[:200]}")
+        if not pull_only and git(v, "rev-list", "--count", "@{u}..HEAD", timeout=10) not in ("", "0"):
+            r = subprocess.run(["git", "-C", str(v), "push", "-q"], capture_output=True, text=True, timeout=90)
+            msg.append("push" if r.returncode == 0 else f"push失敗: {r.stderr.strip()[:200]}")
+    return "同期: " + (", ".join(msg) or "変更なし")
+
+
+def cmd_sync(a):
+    print(sync_vault(vault()))
+
+
+def ensure_basic_memory(v: Path):
+    """Basic Memory にプロジェクト pkb が未登録なら、バックグラウンドで登録・索引する（クラウドの毎回まっさらな環境向け）"""
+    cfg = Path("~/.basic-memory/config.json").expanduser()
+    try:
+        projects = json.loads(cfg.read_text(encoding="utf-8")).get("projects", {}) if cfg.exists() else {}
+    except Exception:
+        projects = {}
+    if Path(projects.get("pkb", {}).get("path", "")).expanduser() == v:
+        return False
+    from shutil import which
+    if not which("uvx"):
+        return False
+    sub = ["project", "move", "pkb", str(v)] if "pkb" in projects else ["project", "add", "pkb", str(v)]
+    subprocess.Popen(["uvx", "basic-memory", *sub], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return True
+
+
 def cmd_session_start(a):
     """SessionStart フック: 保管庫の状況と、紐づくプロジェクトの「前回の続き」を Claude の文脈に出力する"""
     data = hook_input()
@@ -365,10 +426,20 @@ def cmd_session_start(a):
         print(f"[pkb] 知識ベース未作成（{v}）。/pkb:setup で初期設定できます。")
         return
     cwd = data.get("cwd") or os.getcwd()
+    git_vault = is_git_vault(v)
+    if git_vault:
+        pulled = sync_vault(v, pull_only=True)
+    registering = ensure_basic_memory(v)
     p, top = find_project(cwd)
     notes = all_notes(v)
     inbox = sum(1 for n in notes if n.relative_to(v).parts[0] == "inbox")
     print(f"[pkb] 知識ベース: {v}（ノート {len(notes)} 件 / inbox 未整理 {inbox} 件）")
+    if git_vault:
+        print(f"[pkb] 保管庫は Git で同期しています（{pulled}）。ノートを書いたら、区切りごとに "
+              f"`python3 \"${{CLAUDE_PLUGIN_ROOT}}/scripts/pkb.py\" sync` で commit・push してください"
+              "（クラウドでは終了時の自動同期が動かないことがあるため）。")
+    if registering:
+        print("[pkb] Basic Memory への登録・索引をバックグラウンドで開始しました。bm_* ツールが失敗する間は pkb.py search / Grep を使ってください。")
     if not p:
         return
     meta, body, _ = parse(p)
@@ -427,6 +498,13 @@ def cmd_session_end(a):
             sys.stdout = old
 
 
+def cmd_session_end_sync(a):
+    cmd_session_end(a)
+    v = vault()
+    if is_git_vault(v):
+        sync_vault(v)
+
+
 def safe(f):
     def run(a):
         try:
@@ -473,7 +551,8 @@ def main():
     pf.set_defaults(f=cmd_project_for)
     sp.add_parser("projects").set_defaults(f=cmd_projects)
     sp.add_parser("session-start").set_defaults(f=safe(cmd_session_start))
-    sp.add_parser("session-end").set_defaults(f=safe(cmd_session_end))
+    sp.add_parser("session-end").set_defaults(f=safe(cmd_session_end_sync))
+    sp.add_parser("sync").set_defaults(f=cmd_sync)
     a = ap.parse_args()
     a.f(a)
 

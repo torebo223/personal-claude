@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pkb.py\" session-start",
-            "timeout": 15
+            "timeout": 90
           }
         ]
       }
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/pkb.py\" session-end",
-            "timeout": 15
+            "timeout": 120
           }
         ]
       }
