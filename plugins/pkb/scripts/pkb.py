@@ -47,19 +47,15 @@ VAULT_NAMES = ("pkb-vault", "pkb")
 
 
 def vault() -> Path:
-    """保管庫の場所: $PKB_DIR → ~/pkb → 作業フォルダの隣・ホーム・/home/user にある pkb-vault / pkb（クラウド用）"""
+    """保管庫の場所: $PKB_DIR → Git 管理の pkb-vault / pkb（作業フォルダの隣・ホーム・/home/user）→ ~/pkb"""
     if os.environ.get("PKB_DIR"):
         return Path(os.environ["PKB_DIR"]).expanduser()
-    home = Path("~/pkb").expanduser()
-    if home.exists():
-        return home
     bases = [Path.cwd().parent, Path.cwd(), Path.home(), Path("/home/user")]
-    for base in bases:
-        for name in VAULT_NAMES:
-            c = base / name
-            if (c / "index.md").exists() or (c / ".git").exists():
-                return c
-    return home
+    found = [b / n for b in bases for n in VAULT_NAMES if (b / n / "index.md").exists() or (b / n / ".git").exists()]
+    for c in found:
+        if (c / ".git").exists():
+            return c
+    return found[0] if found else Path("~/pkb").expanduser()
 
 
 def all_notes(v: Path):
